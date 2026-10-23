@@ -25,6 +25,11 @@
 
 set -euo pipefail
 
+export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
+if [[ -z "${DEVELOPER_DIR:-}" ]] && [[ -d "/Applications/Xcode.app/Contents/Developer" ]]; then
+  export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+fi
+
 cd "$(dirname "$0")/Mellow"
 
 say()  { printf "\033[1;33m▸ %s\033[0m\n" "$1"; }   # yellow, on brand
@@ -81,6 +86,7 @@ xcodebuild \
 
 # locate the freshly built .app
 APP_PATH="$(xcodebuild -project Mellow.xcodeproj -scheme Mellow -configuration Release \
+  -destination "id=$DEVICE_ID" \
   -showBuildSettings 2>/dev/null \
   | awk '/ BUILT_PRODUCTS_DIR /{d=$3} / FULL_PRODUCT_NAME /{n=$3} END{print d"/"n}')"
 

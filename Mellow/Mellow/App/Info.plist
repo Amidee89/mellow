@@ -34,11 +34,11 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Mellow connects directly to your Oura ring over Bluetooth to read your health data locally on this device, with no cloud account.</string>
+	<string>Mellow connects directly to your Oura ring over Bluetooth to read your biometric data.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Mellow connects directly to your Oura ring over Bluetooth to read your health data locally on this device.</string>
 	<key>NSHealthShareUsageDescription</key>
-	<string>Mellow can read existing sleep and workout data to enrich your ring metrics.</string>
+	<string>Mellow reads sleep, step, heart rate, and wrist temperature data from Apple Health for algorithm tuning and comparison.</string>
 	<key>NSHealthUpdateUsageDescription</key>
 	<string>Mellow can export your ring's heart rate, temperature, and sleep data to Apple Health.</string>
 	<key>UIBackgroundModes</key>

@@ -33,10 +33,6 @@ final class RingStore: ObservableObject {
     @Published var batteryVoltageMv: Int?
     @Published var batteryPercent: Int?
     @Published var wearStateName: String?
-    // ring emits 0x7e/0x7f RealSteps records but their 14-byte payload isnt RE'd to
-    // a count yet, so nil (UI shows "—") not a fabricated number
-    // TODO: decode RealSteps payload -> set from latest 0x7e/0x7f
-    @Published var stepsToday: Int?
     @Published var lastEventDate: Date?
 
     @Published var hrHistory: [Sample] = []
@@ -52,6 +48,12 @@ final class RingStore: ObservableObject {
     @Published var recentRecords: [DecodedRecord] = []
     @Published var packetLog: [PacketLogEntry] = []
 
+    // Movement & Step data from ring
+    @Published var movementHistory: [MovementEpoch] = []
+    @Published var stepsToday: Int?
+    @Published var hourlyRingSteps: [HourlyStepCount] = []
+    @Published var synthesizedHypnogram: SynthesizedHypnogramResult?
+
     // sleep parsed from ring's own internal flags (0x43 debug records carry
     // in_bed=N and check_sleep). reconstruct a basic sleep window from what the
     // ring recorded, before full sleep-stage decoding
@@ -64,6 +66,21 @@ final class RingStore: ObservableObject {
     // tag + respiratory rate per ~30s period) and 0x76 bedtime boundaries. keyed by
     // local "yyyy-MM-dd" of night start so metrics layer pulls stage minutes per day
     @Published var sleepNights: [String: SleepNight] = [:]
+
+    var latestSleepNight: SleepNight? {
+        sleepNights.values
+            .filter { $0.asleepMin > 0 || $0.inBedMin > 0 }
+            .max { ($0.endMs ?? 0) < ($1.endMs ?? 0) }
+    }
+
+    func applyExternalSleepWindow(start: Date, end: Date) {
+        if sleepStartDate == nil || sleepEndDate == nil {
+            sleepStartDate = start
+            sleepEndDate = end
+            sawSleepFlags = true
+            recomputeStepsAndHypnogram()
+        }
+    }
 
     struct SleepNight: Codable {
         // each 0x6a SleepPeriodInfo record covers this many seconds
@@ -181,6 +198,7 @@ final class RingStore: ObservableObject {
         var sleepEnd: Date?
         var sawSleep: Bool = false
         var sleepNights: [String: SleepNight] = [:]
+        var movements: [MovementEpoch] = []
     }
 
     private static var storeURL: URL {
@@ -194,7 +212,7 @@ final class RingStore: ObservableObject {
                           lastHr: instantHrBpm, lastSpo2: spo2Percent, lastHrv: hrvRmssdMs,
                           lastTemp: skinTempC, battery: batteryPercent, lastEvent: lastEventDate,
                           lastSync: lastSyncDate, sleepStart: sleepStartDate, sleepEnd: sleepEndDate,
-                          sawSleep: sawSleepFlags, sleepNights: sleepNights)
+                          sawSleep: sawSleepFlags, sleepNights: sleepNights, movements: movementHistory)
         if let data = try? JSONEncoder().encode(p) {
             try? data.write(to: Self.storeURL, options: .atomic)
         }
@@ -208,6 +226,8 @@ final class RingStore: ObservableObject {
         skinTempC = p.lastTemp; batteryPercent = p.battery; lastEventDate = p.lastEvent
         lastSyncDate = p.lastSync; sleepStartDate = p.sleepStart; sleepEndDate = p.sleepEnd
         sawSleepFlags = p.sawSleep; sleepNights = p.sleepNights
+        movementHistory = p.movements
+        recomputeStepsAndHypnogram()
     }
 
     func reset() {
@@ -224,6 +244,10 @@ final class RingStore: ObservableObject {
         sleepEndDate = nil
         sawSleepFlags = false
         sleepNights.removeAll()
+        movementHistory.removeAll()
+        stepsToday = nil
+        hourlyRingSteps.removeAll()
+        synthesizedHypnogram = nil
         bpmEstimator.reset()
         recentBpms.removeAll()
         lastBpmComputeS = 0
@@ -309,9 +333,106 @@ final class RingStore: ObservableObject {
             arr.sort { $0.timeMs < $1.timeMs }
         }
         fix(&hrHistory); fix(&tempHistory); fix(&spo2History); fix(&hrvHistory)
+
+        for i in movementHistory.indices where !movementHistory[i].timeResolved && movementHistory[i].ringTime != 0 {
+            if let utc = resolve(movementHistory[i].ringTime) {
+                movementHistory[i].timeMs = utc
+                movementHistory[i].timeResolved = true
+            }
+        }
+        movementHistory.sort { $0.timeMs < $1.timeMs }
+
         // rebuild sleep window from re-timed in-bed HR/temp coverage if needed
         if let first = (hrHistory + tempHistory).filter({ $0.timeResolved }).map(\.date).min(),
            sleepStartDate == nil || sleepStartDate! > first { /* keep flag-derived if present */ }
+
+        recomputeStepsAndHypnogram()
+    }
+
+    // MARK: - Movement & Steps Ingestion
+
+    func ingestMovementEpoch(rt: UInt32, acm0: UInt16, acm1: UInt16, acm2: UInt16, respRate: Double?, nowMs: UInt64) {
+        let acmTot = Double(acm0) + Double(acm1) + Double(acm2)
+        let epoch = MovementEpoch(
+            timeMs: nowMs,
+            ringTime: rt,
+            timeResolved: false,
+            acmTotal: acmTot,
+            acm0: acm0,
+            acm1: acm1,
+            acm2: acm2,
+            respiratoryRate: respRate,
+            motionState: nil,
+            estimatedSteps: 0
+        )
+        appendMovement(epoch)
+    }
+
+    func ingestMotionState(rt: UInt32, motionState: Int, nowMs: UInt64) {
+        let energy: Double = motionState == 3 ? 160.0 : (motionState == 2 ? 80.0 : (motionState == 1 ? 40.0 : 10.0))
+        let epoch = MovementEpoch(
+            timeMs: nowMs,
+            ringTime: rt,
+            timeResolved: false,
+            acmTotal: energy,
+            acm0: UInt16(energy),
+            acm1: 0,
+            acm2: 0,
+            respiratoryRate: nil,
+            motionState: motionState,
+            estimatedSteps: motionState == 3 ? 40 : 0
+        )
+        appendMovement(epoch)
+    }
+
+    func ingestStepFeature(rt: UInt32, bytes: [UInt8], nowMs: UInt64) {
+        let hasMovement = bytes.contains { $0 > 0 }
+        let estimated = hasMovement ? 45 : 0
+        let epoch = MovementEpoch(
+            timeMs: nowMs,
+            ringTime: rt,
+            timeResolved: false,
+            acmTotal: hasMovement ? 110.0 : 10.0,
+            acm0: hasMovement ? 100 : 10,
+            acm1: 0,
+            acm2: 0,
+            respiratoryRate: nil,
+            motionState: hasMovement ? 3 : 0,
+            estimatedSteps: estimated
+        )
+        appendMovement(epoch)
+    }
+
+    private func appendMovement(_ epoch: MovementEpoch) {
+        movementHistory.append(epoch)
+        if movementHistory.count > 4000 {
+            movementHistory.removeFirst(movementHistory.count - 4000)
+        }
+        recomputeStepsAndHypnogram()
+    }
+
+    func recomputeStepsAndHypnogram() {
+        // Steps calculation from movement epochs
+        let (total, hourly) = SleepHypnogramClassifier.estimateSteps(epochs: movementHistory)
+        if total > 0 {
+            stepsToday = total
+            hourlyRingSteps = hourly
+        }
+
+        // Hypnogram calculation from movement + HR
+        let wStart = sleepStartDate ?? latestSleepNight?.startMs.map { Date(timeIntervalSince1970: Double($0) / 1000.0) }
+        let wEnd = sleepEndDate ?? latestSleepNight?.endMs.map { Date(timeIntervalSince1970: Double($0) / 1000.0) }
+
+        if let s = wStart, let e = wEnd, e > s {
+            let res = SleepHypnogramClassifier.classify(
+                windowStart: s,
+                windowEnd: e,
+                movementEpochs: movementHistory,
+                hrSamples: hrHistory,
+                hrvSamples: hrvHistory
+            )
+            synthesizedHypnogram = res
+        }
     }
 
     func ingest(_ rec: DecodedRecord) {
@@ -416,6 +537,9 @@ final class RingStore: ObservableObject {
         if let hr = avgHr, hr > 0 { night.sleepAvgHrSum += hr; night.sleepAvgHrCount += 1 }
 
         sleepNights[key] = night
+        sawSleepFlags = true
+        if sleepStartDate == nil || date < sleepStartDate! { sleepStartDate = date }
+        if sleepEndDate == nil || date > sleepEndDate! { sleepEndDate = date }
     }
 
     // apply a 0x76 bedtime period's boundaries to the night window. ring reports
@@ -429,6 +553,8 @@ final class RingStore: ObservableObject {
         if night.endMs == nil || t > night.endMs! { night.endMs = t }
         sleepNights[key] = night
         sawSleepFlags = true
+        if sleepStartDate == nil || date < sleepStartDate! { sleepStartDate = date }
+        if sleepEndDate == nil || date > sleepEndDate! { sleepEndDate = date }
     }
 
     // battery from ring 0x0d response: percent at byte[2] directly; voltage informational

@@ -38,6 +38,7 @@ struct SettingsScreen: View {
                     profileSection
                     deviceSection
                     dataSection
+                    diagnosticsSection
                     keySection
                     aboutSection
                     footer
@@ -186,8 +187,10 @@ struct SettingsScreen: View {
     // MARK: Data
 
     private var dataSection: some View {
-        SettingsSection(title: "Data", icon: "externaldrive.fill", tint: MellowTheme.spo2) {
-            HealthExportRow(health: health)
+        SettingsSection(title: "Apple Health", icon: "heart.text.square.fill", tint: MellowTheme.heartRate) {
+            HealthReadRow(health: health)
+            SettingsDivider()
+            HealthWriteRow(health: health)
             SettingsDivider()
             SettingsSegmentRow(icon: "ruler", title: "Units",
                                tint: MellowTheme.strain,
@@ -195,6 +198,33 @@ struct SettingsScreen: View {
                                selectedIndex: Binding(
                                 get: { useMetric ? 0 : 1 },
                                 set: { useMetric = ($0 == 0) }))
+        }
+    }
+
+    // MARK: Diagnostics & Tuning
+
+    private var diagnosticsSection: some View {
+        SettingsSection(title: "Diagnostics & Algo Tuning", icon: "waveform.badge.magnifyingglass", tint: MellowTheme.accent) {
+            NavigationLink {
+                DebugView()
+            } label: {
+                HStack(spacing: MellowTheme.Spacing.md) {
+                    SettingsRowIcon(icon: "ladybug.fill", tint: MellowTheme.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Packet Inspector & Diagnostic Dump")
+                            .font(.mellowBody)
+                            .foregroundColor(MellowTheme.textPrimary)
+                        Text("View BLE packets, ring state, and share full diagnostic logs")
+                            .font(.mellowCaption)
+                            .foregroundColor(MellowTheme.textSecondary)
+                    }
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundColor(MellowTheme.textTertiary)
+                }
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -248,7 +278,7 @@ struct SettingsScreen: View {
             .padding(.top, 4)
             .disabled(keyHex == nil)
 
-            Text("This key is what lets Mellow talk to your ring. It never leaves your device.")
+            Text("This key is used for authenticated BLE communication with your ring.")
                 .font(.mellowCaption)
                 .foregroundColor(MellowTheme.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -264,21 +294,11 @@ struct SettingsScreen: View {
                             value: appVersion, tint: MellowTheme.textSecondary)
             SettingsDivider()
 
-            Text("Mellow talks straight to your Oura Ring over Bluetooth. No Oura account, no cloud, no subscription. You set up your own key, and your data stays on your phone.")
+            Text("Mellow connects directly to your Oura Ring over Bluetooth for local metric computation, activity tracking, and algorithm evaluation.")
                 .font(.mellowCaption)
                 .foregroundColor(MellowTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.vertical, 4)
-
-            SettingsDivider()
-            HStack(alignment: .top, spacing: MellowTheme.Spacing.md) {
-                Image(systemName: "lock.shield").font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(MellowTheme.good).frame(width: 24)
-                Text("Everything stays on this device. No servers, no network requests. Your biometric data never leaves your phone.")
-                    .font(.mellowCaption).foregroundColor(MellowTheme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.vertical, 4)
         }
     }
 
@@ -389,19 +409,19 @@ private struct SettingsToggleRow: View {
     }
 }
 
-private struct HealthExportRow: View {
+private struct HealthReadRow: View {
     @ObservedObject var health: HealthKitBridge
     @State private var requesting = false
 
     private var isOn: Binding<Bool> {
         Binding(
-            get: { health.exportEnabled },
+            get: { health.readEnabled },
             set: { newValue in
-                health.exportEnabled = newValue
-                if newValue && !health.isAuthorized && health.isAvailable {
+                health.readEnabled = newValue
+                if newValue && !health.isReadAuthorized && health.isAvailable {
                     requesting = true
                     Task {
-                        await health.requestAuthorization()
+                        await health.requestReadAuthorization()
                         requesting = false
                     }
                 }
@@ -411,22 +431,90 @@ private struct HealthExportRow: View {
 
     private var statusText: String {
         if !health.isAvailable { return "Not available on this device" }
-        if !health.exportEnabled { return "Write HR, HRV, SpO₂ & temp to Health" }
-        if requesting { return "Requesting access…" }
-        return health.isAuthorized ? "Connected. Writing to Health."
-                                   : "Tap to allow access in Health"
+        if !health.readEnabled { return "Read steps, sleep stages, HR & temp" }
+        if requesting { return "Requesting read permission…" }
+        return health.isReadAuthorized ? "Reading steps, sleep & Apple Watch data"
+                                       : "Tap to allow read access in Health"
     }
 
     private var statusTint: Color {
         if !health.isAvailable { return MellowTheme.textTertiary }
-        if health.exportEnabled && health.isAuthorized { return MellowTheme.good }
+        if health.readEnabled && health.isReadAuthorized { return MellowTheme.good }
         return MellowTheme.textTertiary
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: MellowTheme.Spacing.md) {
-                SettingsRowIcon(icon: "heart.fill", tint: MellowTheme.heartRate)
+                SettingsRowIcon(icon: "heart.text.square.fill", tint: MellowTheme.spo2)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Apple Health read")
+                        .font(.mellowBody)
+                        .foregroundColor(MellowTheme.textPrimary)
+                    Text(statusText)
+                        .font(.mellowCaption)
+                        .foregroundColor(statusTint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                if requesting {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(MellowTheme.spo2)
+                } else {
+                    Toggle("", isOn: isOn)
+                        .labelsHidden()
+                        .tint(MellowTheme.spo2)
+                        .disabled(!health.isAvailable)
+                }
+            }
+            if health.readEnabled && health.isReadAuthorized {
+                Chip(text: "Read Active", icon: "checkmark.seal.fill",
+                     tint: MellowTheme.good)
+                    .padding(.leading, 46)
+            }
+        }
+    }
+}
+
+private struct HealthWriteRow: View {
+    @ObservedObject var health: HealthKitBridge
+    @State private var requesting = false
+
+    private var isOn: Binding<Bool> {
+        Binding(
+            get: { health.exportEnabled },
+            set: { newValue in
+                health.exportEnabled = newValue
+                if newValue && !health.isWriteAuthorized && health.isAvailable {
+                    requesting = true
+                    Task {
+                        await health.requestWriteAuthorization()
+                        requesting = false
+                    }
+                }
+            }
+        )
+    }
+
+    private var statusText: String {
+        if !health.isAvailable { return "Not available on this device" }
+        if !health.exportEnabled { return "Write ring HR, HRV, SpO₂ & temp to Health" }
+        if requesting { return "Requesting write permission…" }
+        return health.isWriteAuthorized ? "Writing ring biometrics to Health"
+                                        : "Tap to allow write access in Health"
+    }
+
+    private var statusTint: Color {
+        if !health.isAvailable { return MellowTheme.textTertiary }
+        if health.exportEnabled && health.isWriteAuthorized { return MellowTheme.good }
+        return MellowTheme.textTertiary
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: MellowTheme.Spacing.md) {
+                SettingsRowIcon(icon: "arrow.up.heart.fill", tint: MellowTheme.heartRate)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Apple Health export")
                         .font(.mellowBody)
@@ -448,8 +536,8 @@ private struct HealthExportRow: View {
                         .disabled(!health.isAvailable)
                 }
             }
-            if health.exportEnabled && health.isAuthorized {
-                Chip(text: "Authorized", icon: "checkmark.seal.fill",
+            if health.exportEnabled && health.isWriteAuthorized {
+                Chip(text: "Export Active", icon: "checkmark.seal.fill",
                      tint: MellowTheme.good)
                     .padding(.leading, 46)
             }

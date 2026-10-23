@@ -102,7 +102,7 @@ struct HistoryScreen: View {
                              value: store.lastSyncDate.map { Self.timeFormatter.string(from: $0) } ?? "—",
                              icon: "clock.arrow.circlepath", tint: MellowTheme.accent)
                 }
-                Text("Read straight off your ring. No account, no cloud. Pull down to re-sync.")
+                Text("Read directly from your ring over Bluetooth. Pull down to re-sync.")
                     .font(.mellowLabel).foregroundColor(MellowTheme.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }

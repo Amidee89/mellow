@@ -3,7 +3,7 @@ import CoreBluetooth
 import Combine
 import os
 
-private let bleLog = Logger(subsystem: "com.maniforoughi.mellow", category: "ble")
+private let bleLog = Logger(subsystem: "com.deltacygni.mellow", category: "ble")
 
 // thin CoreBluetooth transport: scans by service UUID, connects, discovers notify
 // + cmd characteristics by property (not guessed UUID), pumps notifications to a
@@ -78,7 +78,7 @@ final class RingBLEManager: NSObject, ObservableObject {
         central = CBCentralManager(delegate: self, queue: .main,
                                    options: [
                                     CBCentralManagerOptionShowPowerAlertKey: true,
-                                    CBCentralManagerOptionRestoreIdentifierKey: "com.maniforoughi.mellow.central",
+                                    CBCentralManagerOptionRestoreIdentifierKey: "com.deltacygni.mellow.central",
                                    ])
     }
 
@@ -263,15 +263,36 @@ extension RingBLEManager: CBCentralManagerDelegate {
         bleLog.notice("didFailToConnect \(peripheral.identifier.uuidString, privacy: .public) err=\(error?.localizedDescription ?? "nil", privacy: .public) cachedTimer=\(self.cachedConnectTimeout != nil) keepConnected=\(self.keepConnected)")
         // stale cached UUID failing -> let fallback timer scan
         if cachedConnectTimeout != nil { return }
+        let reason = error?.localizedDescription ?? "connect failed"
+        let lower = reason.lowercased()
+        if lower.contains("pairing information") || lower.contains("peer removed") {
+            keepConnected = false
+            state = .disconnected(reason)
+            onDisconnect?(reason)
+            return
+        }
         // re-arm pending connect on a LATER tick with backoff. re-issuing connect()
         // synchronously recurses unbounded (this callback fires again) and overflows
         if keepConnected { reconnect(peripheral, delay: nextReconnectDelay()); return }
-        let reason = error?.localizedDescription ?? "connect failed"
         state = .disconnected(reason)
         onDisconnect?(reason)
     }
 
+    func centralManager(_ central: CBCentralManager,
+                        didDisconnectPeripheral peripheral: CBPeripheral,
+                        timestamp: CFAbsoluteTime,
+                        isReconnecting: Bool,
+                        error: Error?) {
+        bleLog.notice("didDisconnectPeripheral (autoReconnect): timestamp=\(timestamp) isReconnecting=\(isReconnecting) err=\(error?.localizedDescription ?? "nil", privacy: .public)")
+        handleDisconnect(peripheral: peripheral, isReconnecting: isReconnecting, error: error)
+    }
+
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        bleLog.notice("didDisconnectPeripheral err=\(error?.localizedDescription ?? "nil", privacy: .public)")
+        handleDisconnect(peripheral: peripheral, isReconnecting: false, error: error)
+    }
+
+    private func handleDisconnect(peripheral: CBPeripheral, isReconnecting: Bool, error: Error?) {
         notifyChar = nil
         cmdChar = nil
         // disconnect during cached fast-path is the stale-UUID symptom; let fallback
@@ -282,8 +303,12 @@ extension RingBLEManager: CBCentralManagerDelegate {
         // show "reconnecting" not a hard failure
         if keepConnected {
             onDisconnect?("reconnecting")
-            // deferred not inline: connect can fail synchronously and recurse
-            reconnect(peripheral, delay: nextReconnectDelay())
+            // If the OS is already auto-reconnecting on our behalf, do NOT issue a manual connect()
+            // to avoid conflicting with the OS auto-reconnect logic.
+            if !isReconnecting {
+                // deferred not inline: connect can fail synchronously and recurse
+                reconnect(peripheral, delay: nextReconnectDelay())
+            }
             return
         }
         let reason = error?.localizedDescription ?? "disconnected"

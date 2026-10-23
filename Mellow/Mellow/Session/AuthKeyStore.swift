@@ -5,7 +5,7 @@ import Security
 // for the handshake (PROTOCOL.md §1.3, §3.1); originates from official Oura
 // app assa-store.realm. provisioned via hex paste or realm import.
 enum AuthKeyStore {
-    private static let service = "com.maniforoughi.mellow.authkey"
+    private static let service = "com.deltacygni.mellow.authkey"
     private static let account = "ring-auth-key"
 
     // confirmed = saved key authenticated against ring at least once (session

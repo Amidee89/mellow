@@ -64,7 +64,7 @@ struct HealthAuthView: View {
             Text("Export to Apple Health")
                 .font(.system(size: 28, weight: .heavy, design: .rounded))
                 .foregroundColor(MellowTheme.textPrimary)
-            Text("Mellow can write your ring metrics to the Health app so they live alongside the rest of your data. This is one-way. Mellow never reads anything from Health.")
+            Text("Mellow can export your ring's biometrics (heart rate, HRV, SpO₂, and body temperature) directly to Apple Health.")
                 .font(.mellowBody)
                 .foregroundColor(MellowTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -124,7 +124,7 @@ struct HealthAuthView: View {
     @ViewBuilder
     private var actions: some View {
         VStack(spacing: MellowTheme.Spacing.md) {
-            if health.isAuthorized {
+            if health.isWriteAuthorized {
                 HStack(spacing: 8) {
                     Image(systemName: "checkmark.seal.fill")
                         .foregroundColor(MellowTheme.good)
@@ -187,9 +187,9 @@ struct HealthAuthView: View {
         requesting = true
         health.exportEnabled = true
         Task {
-            await health.requestAuthorization()
+            await health.requestWriteAuthorization()
             requesting = false
-            if health.isAuthorized { dismiss() }
+            if health.isWriteAuthorized { dismiss() }
         }
     }
 }

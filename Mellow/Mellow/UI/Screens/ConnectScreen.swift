@@ -61,7 +61,7 @@ struct ConnectScreen: View {
                     .font(.system(size: 44, weight: .heavy, design: .rounded))
                     .foregroundStyle(MellowTheme.accentGradient)
 
-                Text("Your ring. Your data. No subscription.")
+                Text("Direct ring biometrics & algorithm analysis.")
                     .font(.mellowBody)
                     .foregroundColor(MellowTheme.textSecondary)
                     .multilineTextAlignment(.center)
@@ -218,7 +218,7 @@ enum ConnectPhase: Int, CaseIterable {
         case .scanning:     return "Make sure your ring is on the charger nearby."
         case .provisioning: return "Mellow is writing its own private key to the ring."
         case .handshaking:  return "Establishing a secure, encrypted session…"
-        case .streaming:    return "This ring is yours now. No account, no cloud."
+        case .streaming:    return "Connected and streaming biometrics."
         case .failed:       return "Let’s try that again."
         }
     }

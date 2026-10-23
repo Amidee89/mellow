@@ -2,7 +2,7 @@ import Foundation
 import Combine
 import os
 
-private let mellowLog = Logger(subsystem: "com.maniforoughi.mellow", category: "session")
+private let mellowLog = Logger(subsystem: "com.deltacygni.mellow", category: "session")
 
 // connect -> handshake -> sync lifecycle (PROTOCOL.md §6, §10). owns BLE transport,
 // drives protocol state machine, feeds decoded records into RingStore. no network
@@ -357,9 +357,9 @@ final class RingSession: ObservableObject {
             ingestLiveHR(value)
             return
         }
-        // SpO2: ring sends raw red/IR PPG as 0x6e sub-records, NOT a finished %.
-        // pair red/IR and compute via ratio-of-ratios, reflectance-calibrated
-        ingestSpo2(from: value)
+        // sub-records: ring sends SpO2 (0x6e), sleep movement epochs (0x72),
+        // motion periods (0x6b), and step features (0x7e/0x7f) as tagged TLVs
+        ingestSubRecords(from: value)
         if Framing.looksLikeOuterFrame(value) {
             for frame in Framing.parseOuterFrames(value) { handleOuter(frame) }
         } else {
@@ -386,36 +386,58 @@ final class RingSession: ObservableObject {
         store.ingestPPG(ppg, at: Date())
     }
 
-    // MARK: - SpO2 (ratio-of-ratios on raw red/IR PPG)
+    // MARK: - Sub-Records (SpO2, 0x72 Movement Epochs, 0x6b Motion, 0x7e/0x7f Steps)
 
     // most recent red/IR 0x6e sub-record awaiting its pair partner
     private var pendingSpo2Sub: (channelHi: UInt8, samples: [Double])?
     // rolling window of recent SpO2 estimates for a stable displayed value
     private var spo2Window: [Double] = []
 
-    // scan notification for 0x6e SpO2 sub-records, pair red(0x4x)/IR(0xax-0xbx),
-    // compute via ratio-of-ratios. sub-record: 6e <len=0x11> <rt:4> <header:1>
-    // <12 PPG bytes>, embedded in a concatenated tag/len inner stream
-    private func ingestSpo2(from value: [UInt8]) {
+    // scan notification for sub-records: 0x6e SpO2, 0x72 SleepAcmPeriod, 0x6b MotionPeriod,
+    // 0x7e/0x7f RealStepsFeature
+    private func ingestSubRecords(from value: [UInt8]) {
         var j = 0
+        let nowMs = UInt64(Date().timeIntervalSince1970 * 1000)
         while j + 2 <= value.count {
             let tag = value[j]; let len = Int(value[j + 1])
             if len == 0 || j + 2 + len > value.count { break }
             let body = Array(value[(j + 2)..<(j + 2 + len)])
+
             if tag == 0x6e, len == 0x11 {
                 let header = body[4]
                 let samples = body[5..<17].map(Double.init)        // 12 PPG samples
                 handleSpo2Sub(channelHi: header >> 4, samples: samples)
             } else if tag == 0x72, len == 0x10 {
-                // SleepAcmPeriod: <rt:4><6 u16 metrics>. col3 (bytes 10..12) =
-                // respiratory rate raw (×0.667 ≈ breaths/min); clean rows have high
-                // byte == 0. gate to a physiological band
-                if body.count >= 12, body[11] == 0 {
-                    let raw = Int(body[10])
-                    if raw >= 12, raw <= 40 {
-                        store.respiratoryRate = Double(raw) * 0.667
+                // SleepAcmPeriod: <rt:4><6 u16 metrics>.
+                // acm0, acm1, acm2 = triaxial movement energy. col3 (bytes 10..11) = resp rate
+                if body.count >= 16 {
+                    let rt = UInt32(body[0]) | (UInt32(body[1]) << 8) | (UInt32(body[2]) << 16) | (UInt32(body[3]) << 24)
+                    let acm0 = UInt16(body[4]) | (UInt16(body[5]) << 8)
+                    let acm1 = UInt16(body[6]) | (UInt16(body[7]) << 8)
+                    let acm2 = UInt16(body[8]) | (UInt16(body[9]) << 8)
+                    var resp: Double? = nil
+                    if body[11] == 0 {
+                        let raw = Int(body[10])
+                        if raw >= 12, raw <= 40 {
+                            resp = Double(raw) * 0.667
+                            store.respiratoryRate = resp
+                        }
                     }
+                    let t = TimeResolver.toUtcMs(rt, anchor: anchor) ?? nowMs
+                    store.ingestMovementEpoch(rt: rt, acm0: acm0, acm1: acm1, acm2: acm2, respRate: resp, nowMs: t)
                 }
+            } else if tag == 0x6b, body.count >= 5 {
+                // MotionPeriod: <rt:4><motion_state:1>
+                let rt = UInt32(body[0]) | (UInt32(body[1]) << 8) | (UInt32(body[2]) << 16) | (UInt32(body[3]) << 24)
+                let state = Int(body[4])
+                let t = TimeResolver.toUtcMs(rt, anchor: anchor) ?? nowMs
+                store.ingestMotionState(rt: rt, motionState: state, nowMs: t)
+            } else if (tag == 0x7e || tag == 0x7f), body.count >= 18 {
+                // RealStepsFeature: <rt:4><14 bytes step features>
+                let rt = UInt32(body[0]) | (UInt32(body[1]) << 8) | (UInt32(body[2]) << 16) | (UInt32(body[3]) << 24)
+                let features = Array(body[4..<18])
+                let t = TimeResolver.toUtcMs(rt, anchor: anchor) ?? nowMs
+                store.ingestStepFeature(rt: rt, bytes: features, nowMs: t)
             }
             j += 2 + len
         }

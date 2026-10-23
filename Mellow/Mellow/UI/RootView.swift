@@ -39,11 +39,14 @@ struct MainTabView: View {
             TodayTab()
                 .tabItem { Label("Today", systemImage: "sun.max.fill") }
 
-            NavStackScreen { StressScreen() }
-                .tabItem { Label("Stress", systemImage: "waveform.path.ecg") }
+            NavStackScreen { ActivityScreen() }
+                .tabItem { Label("Activity", systemImage: "figure.walk") }
 
             NavStackScreen { SleepScreen() }
                 .tabItem { Label("Sleep", systemImage: "moon.stars.fill") }
+
+            NavStackScreen { CompareScreen() }
+                .tabItem { Label("Compare", systemImage: "arrow.left.arrow.right") }
 
             NavStackScreen { HistoryScreen() }
                 .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }

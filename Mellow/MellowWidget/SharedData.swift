@@ -13,7 +13,7 @@ struct MellowSnapshot {
 // app writes recovery (Int), hr (Int), optional lastUpdated (timeIntervalSince1970 Double) here
 enum MellowSharedStore {
     // must match App Group capability on both app and widget targets
-    static let suiteName = "group.com.maniforoughi.mellow"
+    static let suiteName = "group.com.deltacygni.mellow"
 
     enum Keys {
         static let recovery = "recovery"

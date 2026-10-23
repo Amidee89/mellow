@@ -81,6 +81,16 @@ final class AppModel: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // sync watch sleep window into ring store if ring didn't log its own
+        h.$latestWatchSleep
+            .compactMap { $0 }
+            .sink { [weak self, weak s, weak m] watchSleep in
+                guard let self, let s, let m else { return }
+                s.applyExternalSleepWindow(start: watchSleep.startDate, end: watchSleep.endDate)
+                m.recompute(from: s, age: self.userAge)
+            }
+            .store(in: &cancellables)
+
         // forward to Apple Health (no-op until authorized)
         s.healthExport = { [weak h] rec, date in
             guard let h else { return }
@@ -140,6 +150,9 @@ struct MellowApp: App {
                 // backgrounded; nudging every foreground makes reconnect smooth
                 model.recomputeMetrics()
                 model.ensureConnected()
+                Task {
+                    await model.health.fetchLatestSleep()
+                }
             }
         }
     }
